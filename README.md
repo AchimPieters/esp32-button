@@ -1,4 +1,4 @@
-# esp32-button
+# ESP32 button library
 ESP32 button library
 
 
