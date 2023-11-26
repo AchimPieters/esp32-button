@@ -1,5 +1,5 @@
 # ESP32 button library
-ESP32 button library
+ESP32 button library for https://github.com/AchimPieters/esp32-homekit and applied in https://github.com/AchimPieters/esp32-homekit-demo
 
 
 
