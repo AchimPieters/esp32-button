@@ -1,6 +1,6 @@
 idf_component_register(
     SRCS "toggle.c" "button.c" "port.c"
-    REQUIRES wolfssl esp_partition json http-parser mdns spi_flash driver
+    REQUIRES driver
     INCLUDE_DIRS "."
 )
 
