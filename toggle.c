@@ -18,6 +18,7 @@ typedef struct _toggle {
         void* context;
 
         bool last_high;
+        bool debounce_timer_armed;
         TimerHandle_t debounce_timer;
 } toggle_t;
 
@@ -26,7 +27,10 @@ typedef struct _toggle {
 
 
 static SemaphoreHandle_t toggles_lock = NULL;
+static toggle_t toggle_pool[GPIO_NUM_MAX];
+static StaticTimer_t toggle_timer_buffers[GPIO_NUM_MAX];
 static toggle_t *toggle_map[GPIO_NUM_MAX];
+static bool toggle_claimed[GPIO_NUM_MAX];
 static bool toggles_initialized = false;
 static const char *TAG = "toggle";
 
@@ -35,6 +39,8 @@ static void toggle_debounce_timer_callback(TimerHandle_t timer) {
         toggle_t *toggle = (toggle_t*) pvTimerGetTimerID(timer);
         if (!toggle)
                 return;
+
+        toggle->debounce_timer_armed = false;
 
         bool high = my_gpio_read(toggle->gpio_num) == 1;
         if (high != toggle->last_high) {
@@ -50,10 +56,20 @@ static void IRAM_ATTR toggle_gpio_isr_handler(void *arg) {
                 return;
 
         BaseType_t higher_task_woken = pdFALSE;
-        if (xTimerResetFromISR(toggle->debounce_timer, &higher_task_woken) == pdPASS) {
-                if (higher_task_woken == pdTRUE) {
-                        portYIELD_FROM_ISR();
+        BaseType_t result;
+
+        if (!toggle->debounce_timer_armed) {
+                toggle->debounce_timer_armed = true;
+                result = xTimerStartFromISR(toggle->debounce_timer, &higher_task_woken);
+                if (result != pdPASS) {
+                        toggle->debounce_timer_armed = false;
                 }
+        } else {
+                result = xTimerResetFromISR(toggle->debounce_timer, &higher_task_woken);
+        }
+
+        if (result == pdPASS && higher_task_woken == pdTRUE) {
+                portYIELD_FROM_ISR();
         }
 }
 
@@ -102,32 +118,32 @@ int toggle_create(const gpio_num_t gpio_num, toggle_callback_fn callback, void* 
 
         const size_t index = (size_t) gpio_num;
 
-        toggle_t *toggle = calloc(1, sizeof(toggle_t));
-        if (!toggle) {
-                ESP_LOGE(TAG, "Failed to allocate memory for toggle on GPIO %d", (int) gpio_num);
-                return -3;
-        }
+        toggle_t *toggle = &toggle_pool[index];
 
+        xSemaphoreTake(toggles_lock, portMAX_DELAY);
+        if (toggle_claimed[index]) {
+                xSemaphoreGive(toggles_lock);
+                return -1;
+        }
+        toggle_claimed[index] = true;
+        xSemaphoreGive(toggles_lock);
+
+        memset(toggle, 0, sizeof(*toggle));
         toggle->gpio_num = gpio_num;
         toggle->callback = callback;
         toggle->context = context;
 
-        toggle->debounce_timer = xTimerCreate(
-                "Toggle debounce", pdMS_TO_TICKS(TOGGLE_DEBOUNCE_MS), pdFALSE, toggle, toggle_debounce_timer_callback
-                );
+        toggle->debounce_timer = xTimerCreateStatic(
+                "Toggle debounce",
+                pdMS_TO_TICKS(TOGGLE_DEBOUNCE_MS),
+                pdFALSE,
+                toggle,
+                toggle_debounce_timer_callback,
+                &toggle_timer_buffers[index]
+        );
         if (!toggle->debounce_timer) {
                 ESP_LOGE(TAG, "Failed to create debounce timer for GPIO %d", (int) gpio_num);
-                free(toggle);
-                return -4;
-        }
-
-        xSemaphoreTake(toggles_lock, portMAX_DELAY);
-
-        if (toggle_map[index]) {
-                xSemaphoreGive(toggles_lock);
-                xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
-                free(toggle);
-                return -1;
+                goto fail_no_timer;
         }
 
         bool intr_type_set = false;
@@ -158,8 +174,9 @@ int toggle_create(const gpio_num_t gpio_num, toggle_callback_fn callback, void* 
         }
         intr_enabled = true;
 
+        xSemaphoreTake(toggles_lock, portMAX_DELAY);
         toggle_map[index] = toggle;
-
+        toggle_claimed[index] = true;
         xSemaphoreGive(toggles_lock);
 
         return 0;
@@ -178,21 +195,28 @@ fail:
                 gpio_set_intr_type(toggle->gpio_num, GPIO_INTR_DISABLE);
         }
 
-        xTimerStop(toggle->debounce_timer, portMAX_DELAY);
-        xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
-        free(toggle);
+        if (toggle->debounce_timer) {
+                toggle->debounce_timer_armed = false;
+                xTimerStop(toggle->debounce_timer, 0);
+                xTimerDelete(toggle->debounce_timer, 0);
+                toggle->debounce_timer = NULL;
+        }
 
+fail_no_timer:
+        xSemaphoreTake(toggles_lock, portMAX_DELAY);
+        toggle_map[index] = NULL;
+        toggle_claimed[index] = false;
         xSemaphoreGive(toggles_lock);
+
+        memset(toggle, 0, sizeof(*toggle));
 
         return -4;
 }
 
 
 void toggle_delete(const gpio_num_t gpio_num) {
-        if (!toggles_initialized) {
-                if (toggles_init() != 0)
-                        return;
-        }
+        if (!toggles_initialized)
+                return;
 
         if (!GPIO_IS_VALID_GPIO(gpio_num)) {
                 ESP_LOGE(TAG, "Invalid GPIO number: %d", (int) gpio_num);
@@ -206,6 +230,7 @@ void toggle_delete(const gpio_num_t gpio_num) {
 
         toggle = toggle_map[index];
         toggle_map[index] = NULL;
+        toggle_claimed[index] = false;
 
         xSemaphoreGive(toggles_lock);
 
@@ -224,11 +249,13 @@ void toggle_delete(const gpio_num_t gpio_num) {
         gpio_set_intr_type(gpio_num, GPIO_INTR_DISABLE);
 
         if (toggle->debounce_timer) {
-                xTimerStop(toggle->debounce_timer, portMAX_DELAY);
-                xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
+                toggle->debounce_timer_armed = false;
+                xTimerStop(toggle->debounce_timer, 0);
+                xTimerDelete(toggle->debounce_timer, 0);
+                toggle->debounce_timer = NULL;
         }
 
-        free(toggle);
+        memset(toggle, 0, sizeof(*toggle));
 }
 
 
@@ -241,8 +268,10 @@ void toggle_sync_state(const gpio_num_t gpio_num) {
         toggle_t *toggle = toggle_find_by_gpio(gpio_num);
         if (toggle) {
                 if (toggle->debounce_timer && xTimerIsTimerActive(toggle->debounce_timer)) {
-                        xTimerStop(toggle->debounce_timer, portMAX_DELAY);
+                        xTimerStop(toggle->debounce_timer, 0);
                 }
+
+                toggle->debounce_timer_armed = false;
 
                 toggle->last_high = my_gpio_read(toggle->gpio_num) == 1;
         }

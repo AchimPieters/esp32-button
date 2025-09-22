@@ -1,6 +1,6 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #include <esp_log.h>
 
@@ -9,28 +9,47 @@
 #include "port.h"
 
 
+typedef enum {
+        button_timer_mode_idle = 0,
+        button_timer_mode_long_press,
+        button_timer_mode_repeat_window,
+} button_timer_mode_t;
+
 typedef struct _button {
         gpio_num_t gpio_num;
         button_config_t config;
         button_callback_fn callback;
         void* context;
 
-        uint8_t press_count;
-        TimerHandle_t long_press_timer;
-        TimerHandle_t repeat_press_timeout_timer;
+        uint16_t press_count;
+        TimerHandle_t event_timer;
+        button_timer_mode_t timer_mode;
 } button_t;
 
 static SemaphoreHandle_t buttons_lock = NULL;
 static button_t *registered_buttons[GPIO_NUM_MAX];
+static button_t button_pool[GPIO_NUM_MAX];
+static StaticTimer_t button_timer_buffers[GPIO_NUM_MAX];
+static bool button_claimed[GPIO_NUM_MAX];
+static TickType_t button_ms_to_ticks(uint16_t duration_ms) {
+        if (!duration_ms)
+                return 0;
+
+        TickType_t ticks = pdMS_TO_TICKS(duration_ms);
+        return ticks ? ticks : 1;
+}
 static const char *TAG = "button";
 
 static void button_fire_event(button_t *button) {
+        if (!button->press_count)
+                return;
+
         button_event_t event = button_event_single_press;
 
         switch (button->press_count) {
         case 1: event = button_event_single_press; break;
         case 2: event = button_event_double_press; break;
-        case 3: event = button_event_tripple_press; break;
+        default: event = button_event_tripple_press; break;
         }
 
         button->callback(event, button->context);
@@ -42,63 +61,98 @@ static void button_toggle_callback(bool high, void *context) {
                 return;
 
         button_t *button = (button_t*) context;
-        if (high == (button->config.active_level == button_active_high)) {
-                // pressed
-                button->press_count++;
-                if (button->long_press_timer && button->press_count == 1) {
-                        xTimerReset(button->long_press_timer, 1);
+        const bool pressed = (high == (button->config.active_level == button_active_high));
+
+        if (pressed) {
+                if (button->press_count < button->config.max_repeat_presses) {
+                        button->press_count++;
+                } else {
+                        button->press_count = button->config.max_repeat_presses;
+                }
+
+                if (button->event_timer && button->timer_mode == button_timer_mode_repeat_window) {
+                        if (xTimerIsTimerActive(button->event_timer)) {
+                                xTimerStop(button->event_timer, 0);
+                        }
+                        button->timer_mode = button_timer_mode_idle;
+                }
+
+                if (button->event_timer && button->config.long_press_time && button->press_count == 1) {
+                        button->timer_mode = button_timer_mode_long_press;
+                        TickType_t ticks = button_ms_to_ticks(button->config.long_press_time);
+                        if (ticks) {
+                                xTimerChangePeriod(button->event_timer, ticks, 0);
+                        }
                 }
         } else {
-                // released
                 if (!button->press_count)
                         return;
 
-                if (button->long_press_timer
-                    && xTimerIsTimerActive(button->long_press_timer)) {
-                        xTimerStop(button->long_press_timer, 1);
+                if (button->event_timer && button->timer_mode == button_timer_mode_long_press
+                    && xTimerIsTimerActive(button->event_timer)) {
+                        xTimerStop(button->event_timer, 0);
+                        button->timer_mode = button_timer_mode_idle;
                 }
 
-                if (button->press_count >= button->config.max_repeat_presses
-                    || !button->config.repeat_press_timeout) {
-                        if (button->repeat_press_timeout_timer
-                            && xTimerIsTimerActive(button->repeat_press_timeout_timer)) {
-                                xTimerStop(button->repeat_press_timeout_timer, 1);
-                        }
+                const bool reached_limit = button->press_count >= button->config.max_repeat_presses;
+                const bool repeat_disabled = (!button->config.repeat_press_timeout
+                                               || button->config.max_repeat_presses <= 1);
 
+                if (reached_limit || repeat_disabled || !button->event_timer) {
+                        if (button->event_timer && xTimerIsTimerActive(button->event_timer)) {
+                                xTimerStop(button->event_timer, 0);
+                        }
+                        button->timer_mode = button_timer_mode_idle;
                         button_fire_event(button);
                 } else {
-                        if (button->repeat_press_timeout_timer) {
-                                xTimerReset(button->repeat_press_timeout_timer, 1);
+                        TickType_t ticks = button_ms_to_ticks(button->config.repeat_press_timeout);
+                        if (!ticks) {
+                                if (button->event_timer && xTimerIsTimerActive(button->event_timer)) {
+                                        xTimerStop(button->event_timer, 0);
+                                }
+                                button->timer_mode = button_timer_mode_idle;
+                                button_fire_event(button);
+                        } else {
+                                button->timer_mode = button_timer_mode_repeat_window;
+                                xTimerChangePeriod(button->event_timer, ticks, 0);
                         }
                 }
         }
 }
 
-static void button_long_press_timer_callback(TimerHandle_t timer) {
+static void button_event_timer_callback(TimerHandle_t timer) {
         button_t *button = (button_t*) pvTimerGetTimerID(timer);
+        if (!button)
+                return;
 
-        button->callback(button_event_long_press, button->context);
+        switch (button->timer_mode) {
+        case button_timer_mode_long_press:
+                button->timer_mode = button_timer_mode_idle;
+                button->callback(button_event_long_press, button->context);
+                button->press_count = 0;
+                break;
+        case button_timer_mode_repeat_window:
+                button->timer_mode = button_timer_mode_idle;
+                button_fire_event(button);
+                break;
+        default:
+                break;
+        }
+}
+
+static void button_reset(button_t *button) {
+        if (!button)
+                return;
+
+        if (button->event_timer) {
+                xTimerStop(button->event_timer, 0);
+                xTimerDelete(button->event_timer, 0);
+                button->event_timer = NULL;
+        }
+
+        button->timer_mode = button_timer_mode_idle;
         button->press_count = 0;
-}
-
-static void button_repeat_press_timeout_timer_callback(TimerHandle_t timer) {
-        button_t *button = (button_t*) pvTimerGetTimerID(timer);
-
-        button_fire_event(button);
-}
-
-static void button_free(button_t *button) {
-        if (button->long_press_timer) {
-                xTimerStop(button->long_press_timer, 1);
-                xTimerDelete(button->long_press_timer, 1);
-        }
-
-        if (button->repeat_press_timeout_timer) {
-                xTimerStop(button->repeat_press_timeout_timer, 1);
-                xTimerDelete(button->repeat_press_timeout_timer, 1);
-        }
-
-        free(button);
+        memset(button, 0, sizeof(*button));
 }
 
 static int buttons_init() {
@@ -128,58 +182,63 @@ int button_create(const gpio_num_t gpio_num,
                 return -7;
         }
 
+        button_config_t normalized = config;
+        if (!normalized.max_repeat_presses) {
+                normalized.max_repeat_presses = 1;
+        }
+        if (normalized.max_repeat_presses > UINT16_MAX) {
+                normalized.max_repeat_presses = UINT16_MAX;
+        }
+
         const size_t index = (size_t) gpio_num;
+        button_t *button = &button_pool[index];
 
         xSemaphoreTake(buttons_lock, portMAX_DELAY);
-        bool exists = registered_buttons[index] != NULL;
+        if (button_claimed[index]) {
+                xSemaphoreGive(buttons_lock);
+                return -1;
+        }
+        button_claimed[index] = true;
         xSemaphoreGive(buttons_lock);
 
-        if (exists)
-                return -1;
+        button_reset(button);
 
-        // Create a new button
-        button_t *button = malloc(sizeof(button_t));
-        if (!button) {
-                ESP_LOGE(TAG, "Failed to allocate memory for button on GPIO %d", (int) gpio_num);
-                return -6;
-        }
-
-        memset(button, 0, sizeof(*button));
         button->gpio_num = gpio_num;
-        button->config = config;
+        button->config = normalized;
         button->callback = callback;
         button->context = context;
-        // Create long press timer if needed
-        if (config.long_press_time) {
-                button->long_press_timer = xTimerCreate(
-                        "Button Long Press Timer", pdMS_TO_TICKS(config.long_press_time),
-                        pdFALSE, button, button_long_press_timer_callback
-                        );
-                if (!button->long_press_timer) {
-                        button_free(button);
-                        return -2;
-                }
-        }
-        // Create repeat press timeout timer if needed
-        if (config.max_repeat_presses > 1 && config.repeat_press_timeout) {
-                button->repeat_press_timeout_timer = xTimerCreate(
-                        "Button Repeat Press Timeout Timer", pdMS_TO_TICKS(config.repeat_press_timeout),
-                        pdFALSE, button, button_repeat_press_timeout_timer_callback
-                        );
-                if (!button->repeat_press_timeout_timer) {
-                        button_free(button);
-                        return -3;
+        button->timer_mode = button_timer_mode_idle;
+
+        const bool needs_timer = (normalized.long_press_time > 0)
+                || (normalized.max_repeat_presses > 1 && normalized.repeat_press_timeout > 0);
+
+        int result = -4;
+        bool toggle_ready = false;
+
+        if (needs_timer) {
+                button->event_timer = xTimerCreateStatic(
+                        "Button Event Timer",
+                        1,
+                        pdFALSE,
+                        button,
+                        button_event_timer_callback,
+                        &button_timer_buffers[index]
+                );
+                if (!button->event_timer) {
+                        ESP_LOGE(TAG, "Failed to create timer for button on GPIO %d", (int) gpio_num);
+                        result = -2;
+                        goto fail;
                 }
         }
 
-        // Initialize the toggle
-        int r = toggle_create(gpio_num, button_toggle_callback, button);
-        if (r) {
-                button_free(button);
-                return (r == -1) ? -1 : -4;
+        result = toggle_create(gpio_num, button_toggle_callback, button);
+        if (result) {
+                result = (result == -1) ? -1 : -4;
+                goto fail;
         }
+        toggle_ready = true;
 
-        if (config.active_level == button_active_low) {
+        if (normalized.active_level == button_active_low) {
                 my_gpio_pullup(button->gpio_num);
         } else {
                 my_gpio_pulldown(button->gpio_num);
@@ -188,19 +247,25 @@ int button_create(const gpio_num_t gpio_num,
         toggle_sync_state(button->gpio_num);
 
         xSemaphoreTake(buttons_lock, portMAX_DELAY);
-
-        if (registered_buttons[index]) {
-                xSemaphoreGive(buttons_lock);
-                toggle_delete(button->gpio_num);
-                button_free(button);
-                return -1;
-        }
-
         registered_buttons[index] = button;
-
+        button_claimed[index] = true;
         xSemaphoreGive(buttons_lock);
 
         return 0;
+
+fail:
+        if (toggle_ready) {
+                toggle_delete(button->gpio_num);
+        }
+
+        button_reset(button);
+
+        xSemaphoreTake(buttons_lock, portMAX_DELAY);
+        registered_buttons[index] = NULL;
+        button_claimed[index] = false;
+        xSemaphoreGive(buttons_lock);
+
+        return result;
 }
 
 void button_destroy(const gpio_num_t gpio_num) {
@@ -220,6 +285,7 @@ void button_destroy(const gpio_num_t gpio_num) {
 
         button = registered_buttons[index];
         registered_buttons[index] = NULL;
+        button_claimed[index] = false;
 
         xSemaphoreGive(buttons_lock);
 
@@ -227,5 +293,5 @@ void button_destroy(const gpio_num_t gpio_num) {
                 return;
 
         toggle_delete(button->gpio_num);
-        button_free(button);
+        button_reset(button);
 }

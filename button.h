@@ -39,11 +39,10 @@ typedef void (*button_callback_fn)(button_event_t event, void* context);
 
 // Returns 0 on success.
 // -1 if the GPIO is already registered.
-// -2 if the long-press timer cannot be created.
-// -3 if the repeat-press timer cannot be created.
+// -2 if timer resources for the button cannot be created.
 // -4 if the GPIO toggle helper cannot be initialised.
 // -5 if the GPIO number is invalid.
-// -6 if the button structure cannot be allocated.
+// -7 if the button lock cannot be created.
 int button_create(gpio_num_t gpio_num,
                   button_config_t config,
                   button_callback_fn callback,
