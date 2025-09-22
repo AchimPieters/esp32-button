@@ -137,6 +137,11 @@ int button_create(const gpio_num_t gpio_num,
                 return -1;
 // Create a new button
         button = malloc(sizeof(button_t));
+        if (!button) {
+                ESP_LOGE(TAG, "Failed to allocate memory for button on GPIO %d", (int) gpio_num);
+                return -6;
+        }
+
         memset(button, 0, sizeof(*button));
         button->gpio_num = gpio_num;
         button->config = config;
@@ -154,7 +159,7 @@ int button_create(const gpio_num_t gpio_num,
                 }
         }
         // Create repeat press timeout timer if needed
-        if (config.max_repeat_presses > 1) {
+        if (config.max_repeat_presses > 1 && config.repeat_press_timeout) {
                 button->repeat_press_timeout_timer = xTimerCreate(
                         "Button Repeat Press Timeout Timer", pdMS_TO_TICKS(config.repeat_press_timeout),
                         pdFALSE, button, button_repeat_press_timeout_timer_callback
@@ -165,18 +170,20 @@ int button_create(const gpio_num_t gpio_num,
                 }
         }
 
-        my_gpio_enable(button->gpio_num);
-        if (config.active_level == button_active_low) {
-                my_gpio_pullup(button->gpio_num);
-        } else {
-                my_gpio_pulldown(button->gpio_num);
-        }
 // Initialize the toggle
         int r = toggle_create(gpio_num, button_toggle_callback, button);
         if (r) {
                 button_free(button);
                 return -4;
         }
+
+        if (config.active_level == button_active_low) {
+                my_gpio_pullup(button->gpio_num);
+        } else {
+                my_gpio_pulldown(button->gpio_num);
+        }
+
+        toggle_sync_state(button->gpio_num);
 
         xSemaphoreTake(buttons_lock, portMAX_DELAY);
 
