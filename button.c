@@ -18,12 +18,10 @@ typedef struct _button {
         uint8_t press_count;
         TimerHandle_t long_press_timer;
         TimerHandle_t repeat_press_timeout_timer;
-
-        struct _button *next;
 } button_t;
 
 static SemaphoreHandle_t buttons_lock = NULL;
-static button_t *buttons = NULL;
+static button_t *registered_buttons[GPIO_NUM_MAX];
 static const char *TAG = "button";
 
 static void button_fire_event(button_t *button) {
@@ -47,8 +45,8 @@ static void button_toggle_callback(bool high, void *context) {
         if (high == (button->config.active_level == button_active_high)) {
                 // pressed
                 button->press_count++;
-                if (button->config.long_press_time && button->press_count == 1) {
-                        xTimerStart(button->long_press_timer, 1);
+                if (button->long_press_timer && button->press_count == 1) {
+                        xTimerReset(button->long_press_timer, 1);
                 }
         } else {
                 // released
@@ -69,7 +67,9 @@ static void button_toggle_callback(bool high, void *context) {
 
                         button_fire_event(button);
                 } else {
-                        xTimerStart(button->repeat_press_timeout_timer, 1);
+                        if (button->repeat_press_timeout_timer) {
+                                xTimerReset(button->repeat_press_timeout_timer, 1);
+                        }
                 }
         }
 }
@@ -103,8 +103,11 @@ static void button_free(button_t *button) {
 
 static int buttons_init() {
         if (!buttons_lock) {
-                buttons_lock = xSemaphoreCreateBinary();
-                xSemaphoreGive(buttons_lock);
+                buttons_lock = xSemaphoreCreateMutex();
+                if (!buttons_lock) {
+                        ESP_LOGE(TAG, "Failed to create button lock");
+                        return -1;
+                }
         }
 
         return 0;
@@ -121,22 +124,21 @@ int button_create(const gpio_num_t gpio_num,
                 return -5;
         }
 
-        if (!buttons_lock) {
-                buttons_init();
+        if (!buttons_lock && buttons_init() != 0) {
+                return -7;
         }
 
-        xSemaphoreTake(buttons_lock, portMAX_DELAY);
-        button_t *button = buttons;
-        while (button && button->gpio_num != gpio_num)
-                button = button->next;
+        const size_t index = (size_t) gpio_num;
 
-        bool exists = button != NULL;
+        xSemaphoreTake(buttons_lock, portMAX_DELAY);
+        bool exists = registered_buttons[index] != NULL;
         xSemaphoreGive(buttons_lock);
 
         if (exists)
                 return -1;
-// Create a new button
-        button = malloc(sizeof(button_t));
+
+        // Create a new button
+        button_t *button = malloc(sizeof(button_t));
         if (!button) {
                 ESP_LOGE(TAG, "Failed to allocate memory for button on GPIO %d", (int) gpio_num);
                 return -6;
@@ -170,11 +172,11 @@ int button_create(const gpio_num_t gpio_num,
                 }
         }
 
-// Initialize the toggle
+        // Initialize the toggle
         int r = toggle_create(gpio_num, button_toggle_callback, button);
         if (r) {
                 button_free(button);
-                return -4;
+                return (r == -1) ? -1 : -4;
         }
 
         if (config.active_level == button_active_low) {
@@ -187,9 +189,14 @@ int button_create(const gpio_num_t gpio_num,
 
         xSemaphoreTake(buttons_lock, portMAX_DELAY);
 
-        // Add the new button to the list
-        button->next = buttons;
-        buttons = button;
+        if (registered_buttons[index]) {
+                xSemaphoreGive(buttons_lock);
+                toggle_delete(button->gpio_num);
+                button_free(button);
+                return -1;
+        }
+
+        registered_buttons[index] = button;
 
         xSemaphoreGive(buttons_lock);
 
@@ -202,36 +209,23 @@ void button_destroy(const gpio_num_t gpio_num) {
                 return;
         }
 
-        if (!buttons_lock) {
-                buttons_init();
-        }
-
-        xSemaphoreTake(buttons_lock, portMAX_DELAY);
-
-        if (!buttons) {
-                xSemaphoreGive(buttons_lock);
+        if (!buttons_lock && buttons_init() != 0) {
                 return;
         }
 
         button_t *button = NULL;
-        if (buttons->gpio_num == gpio_num) {
-                button = buttons;
-                buttons = buttons->next;
-        } else {
-                button_t *b = buttons;
-                while (b->next) {
-                        if (b->next->gpio_num == gpio_num) {
-                                button = b->next;
-                                b->next = b->next->next;
-                                break;
-                        }
-                }
-        }
+        const size_t index = (size_t) gpio_num;
 
-        if (button) {
-                toggle_delete(button->gpio_num);
-                button_free(button);
-        }
+        xSemaphoreTake(buttons_lock, portMAX_DELAY);
+
+        button = registered_buttons[index];
+        registered_buttons[index] = NULL;
 
         xSemaphoreGive(buttons_lock);
+
+        if (!button)
+                return;
+
+        toggle_delete(button->gpio_num);
+        button_free(button);
 }
