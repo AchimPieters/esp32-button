@@ -3,6 +3,8 @@
 
 #include <stdio.h>
 
+#include <esp_log.h>
+
 #include "toggle.h"
 #include "port.h"
 
@@ -13,7 +15,7 @@
 
 
 typedef struct _toggle {
-        uint8_t gpio_num;
+        gpio_num_t gpio_num;
         toggle_callback_fn callback;
         void* context;
 
@@ -32,9 +34,10 @@ static SemaphoreHandle_t toggles_lock = NULL;
 static toggle_t *toggles = NULL;
 static TimerHandle_t toggle_timer = NULL;
 static bool toggles_initialized = false;
+static const char *TAG = "toggle";
 
 
-static toggle_t *toggle_find_by_gpio(const uint8_t gpio_num) {
+static toggle_t *toggle_find_by_gpio(const gpio_num_t gpio_num) {
         toggle_t *toggle = toggles;
         while (toggle && toggle->gpio_num != gpio_num)
                 toggle = toggle->next;
@@ -87,9 +90,14 @@ static int toggles_init() {
 }
 
 
-int toggle_create(const uint8_t gpio_num, toggle_callback_fn callback, void* context) {
+int toggle_create(const gpio_num_t gpio_num, toggle_callback_fn callback, void* context) {
         if (!toggles_initialized)
                 toggles_init();
+
+        if (!GPIO_IS_VALID_GPIO(gpio_num)) {
+                ESP_LOGE(TAG, "Invalid GPIO number: %d", (int) gpio_num);
+                return -2;
+        }
 
         toggle_t *toggle = toggle_find_by_gpio(gpio_num);
         if (toggle)
@@ -119,9 +127,14 @@ int toggle_create(const uint8_t gpio_num, toggle_callback_fn callback, void* con
 }
 
 
-void toggle_delete(const uint8_t gpio_num) {
+void toggle_delete(const gpio_num_t gpio_num) {
         if (!toggles_initialized)
                 toggles_init();
+
+        if (!GPIO_IS_VALID_GPIO(gpio_num)) {
+                ESP_LOGE(TAG, "Invalid GPIO number: %d", (int) gpio_num);
+                return;
+        }
 
         xSemaphoreTake(toggles_lock, portMAX_DELAY);
 
