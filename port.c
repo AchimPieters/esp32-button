@@ -82,9 +82,5 @@ void my_gpio_pulldown(gpio_num_t gpio) {
 
 // Function to read GPIO level
 uint8_t my_gpio_read(gpio_num_t gpio) {
-        if (!validate_gpio(gpio)) {
-                return 0;
-        }
-
         return (uint8_t) gpio_get_level(gpio);
 }

@@ -19,8 +19,6 @@ typedef struct _toggle {
 
         bool last_high;
         TimerHandle_t debounce_timer;
-
-        struct _toggle *next;
 } toggle_t;
 
 
@@ -28,7 +26,7 @@ typedef struct _toggle {
 
 
 static SemaphoreHandle_t toggles_lock = NULL;
-static toggle_t *toggles = NULL;
+static toggle_t *toggle_map[GPIO_NUM_MAX];
 static bool toggles_initialized = false;
 static const char *TAG = "toggle";
 
@@ -61,11 +59,10 @@ static void IRAM_ATTR toggle_gpio_isr_handler(void *arg) {
 
 
 static toggle_t *toggle_find_by_gpio(const gpio_num_t gpio_num) {
-        toggle_t *toggle = toggles;
-        while (toggle && toggle->gpio_num != gpio_num)
-                toggle = toggle->next;
+        if (!GPIO_IS_VALID_GPIO(gpio_num))
+                return NULL;
 
-        return toggle;
+        return toggle_map[(size_t) gpio_num];
 }
 
 
@@ -73,12 +70,11 @@ static int toggles_init() {
         if (toggles_initialized)
                 return 0;
 
-        toggles_lock = xSemaphoreCreateBinary();
+        toggles_lock = xSemaphoreCreateMutex();
         if (!toggles_lock) {
                 ESP_LOGE(TAG, "Failed to create toggle lock");
                 return -1;
         }
-        xSemaphoreGive(toggles_lock);
 
         esp_err_t err = gpio_install_isr_service(ESP_INTR_FLAG_LOWMED);
         if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
@@ -104,17 +100,14 @@ int toggle_create(const gpio_num_t gpio_num, toggle_callback_fn callback, void* 
                 return -2;
         }
 
-        toggle_t *toggle = toggle_find_by_gpio(gpio_num);
-        if (toggle)
-                return -1;
+        const size_t index = (size_t) gpio_num;
 
-        toggle = malloc(sizeof(toggle_t));
+        toggle_t *toggle = calloc(1, sizeof(toggle_t));
         if (!toggle) {
                 ESP_LOGE(TAG, "Failed to allocate memory for toggle on GPIO %d", (int) gpio_num);
                 return -3;
         }
 
-        memset(toggle, 0, sizeof(*toggle));
         toggle->gpio_num = gpio_num;
         toggle->callback = callback;
         toggle->context = context;
@@ -128,44 +121,70 @@ int toggle_create(const gpio_num_t gpio_num, toggle_callback_fn callback, void* 
                 return -4;
         }
 
+        xSemaphoreTake(toggles_lock, portMAX_DELAY);
+
+        if (toggle_map[index]) {
+                xSemaphoreGive(toggles_lock);
+                xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
+                free(toggle);
+                return -1;
+        }
+
+        bool intr_type_set = false;
+        bool isr_registered = false;
+        bool intr_enabled = false;
+
         my_gpio_enable(toggle->gpio_num);
         toggle->last_high = my_gpio_read(toggle->gpio_num) == 1;
 
         esp_err_t err = gpio_set_intr_type(toggle->gpio_num, GPIO_INTR_ANYEDGE);
         if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to set interrupt type for GPIO %d: %s", (int) gpio_num, esp_err_to_name(err));
-                xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
-                free(toggle);
-                return -4;
+                goto fail;
         }
+        intr_type_set = true;
 
         err = gpio_isr_handler_add(toggle->gpio_num, toggle_gpio_isr_handler, toggle);
         if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to add ISR handler for GPIO %d: %s", (int) gpio_num, esp_err_to_name(err));
-                gpio_set_intr_type(toggle->gpio_num, GPIO_INTR_DISABLE);
-                xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
-                free(toggle);
-                return -4;
+                goto fail;
         }
+        isr_registered = true;
 
         err = gpio_intr_enable(toggle->gpio_num);
         if (err != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to enable interrupts for GPIO %d: %s", (int) gpio_num, esp_err_to_name(err));
-                gpio_isr_handler_remove(toggle->gpio_num);
-                gpio_set_intr_type(toggle->gpio_num, GPIO_INTR_DISABLE);
-                xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
-                free(toggle);
-                return -4;
+                goto fail;
         }
+        intr_enabled = true;
 
-        xSemaphoreTake(toggles_lock, portMAX_DELAY);
-
-        toggle->next = toggles;
-        toggles = toggle;
+        toggle_map[index] = toggle;
 
         xSemaphoreGive(toggles_lock);
 
         return 0;
+
+fail:
+        if (intr_enabled) {
+                gpio_intr_disable(toggle->gpio_num);
+        }
+        if (isr_registered) {
+                esp_err_t remove_err = gpio_isr_handler_remove(toggle->gpio_num);
+                if (remove_err != ESP_OK && remove_err != ESP_ERR_INVALID_STATE) {
+                        ESP_LOGE(TAG, "Failed to remove ISR handler for GPIO %d: %s", (int) gpio_num, esp_err_to_name(remove_err));
+                }
+        }
+        if (intr_type_set) {
+                gpio_set_intr_type(toggle->gpio_num, GPIO_INTR_DISABLE);
+        }
+
+        xTimerStop(toggle->debounce_timer, portMAX_DELAY);
+        xTimerDelete(toggle->debounce_timer, portMAX_DELAY);
+        free(toggle);
+
+        xSemaphoreGive(toggles_lock);
+
+        return -4;
 }
 
 
@@ -180,27 +199,13 @@ void toggle_delete(const gpio_num_t gpio_num) {
                 return;
         }
 
+        toggle_t *toggle = NULL;
+        const size_t index = (size_t) gpio_num;
+
         xSemaphoreTake(toggles_lock, portMAX_DELAY);
 
-        if (!toggles) {
-                xSemaphoreGive(toggles_lock);
-                return;
-        }
-
-        toggle_t *toggle = NULL;
-        if (toggles->gpio_num == gpio_num) {
-                toggle = toggles;
-                toggles = toggles->next;
-        } else {
-                toggle_t *b = toggles;
-                while (b->next) {
-                        if (b->next->gpio_num == gpio_num) {
-                                toggle = b->next;
-                                b->next = b->next->next;
-                                break;
-                        }
-                }
-        }
+        toggle = toggle_map[index];
+        toggle_map[index] = NULL;
 
         xSemaphoreGive(toggles_lock);
 
