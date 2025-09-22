@@ -13,7 +13,7 @@ typedef void (*toggle_callback_fn)(bool high, void* context);
 
 // Function to create a toggle
 // Returns 0 on success, -1 if the GPIO is already tracked, -2 if the GPIO is invalid,
-// -3 if resources for the toggle cannot be allocated, and -4 if interrupt
+// -3 if the toggle subsystem cannot be initialised, and -4 if timer or interrupt
 // configuration fails.
 int toggle_create(gpio_num_t gpio_num, toggle_callback_fn callback, void* context);
 
