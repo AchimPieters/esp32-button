@@ -2,13 +2,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <esp_log.h>
+
 #include "toggle.h"
 #include "button.h"
 #include "port.h"
 
 
 typedef struct _button {
-        uint8_t gpio_num;
+        gpio_num_t gpio_num;
         button_config_t config;
         button_callback_fn callback;
         void* context;
@@ -22,6 +24,7 @@ typedef struct _button {
 
 static SemaphoreHandle_t buttons_lock = NULL;
 static button_t *buttons = NULL;
+static const char *TAG = "button";
 
 static void button_fire_event(button_t *button) {
         button_event_t event = button_event_single_press;
@@ -108,11 +111,16 @@ static int buttons_init() {
 }
 
 // Check if the button with the given GPIO already exists
-int button_create(const uint8_t gpio_num,
+int button_create(const gpio_num_t gpio_num,
                   button_config_t config,
                   button_callback_fn callback,
                   void* context)
 {
+        if (!GPIO_IS_VALID_GPIO(gpio_num)) {
+                ESP_LOGE(TAG, "Invalid GPIO number: %d", (int) gpio_num);
+                return -5;
+        }
+
         if (!buttons_lock) {
                 buttons_init();
         }
@@ -181,7 +189,12 @@ int button_create(const uint8_t gpio_num,
         return 0;
 }
 
-void button_destroy(const uint8_t gpio_num) {
+void button_destroy(const gpio_num_t gpio_num) {
+        if (!GPIO_IS_VALID_GPIO(gpio_num)) {
+                ESP_LOGE(TAG, "Invalid GPIO number: %d", (int) gpio_num);
+                return;
+        }
+
         if (!buttons_lock) {
                 buttons_init();
         }
