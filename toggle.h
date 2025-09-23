@@ -11,10 +11,11 @@
 // Callback function signature
 typedef void (*toggle_callback_fn)(bool high, void* context);
 
-// Function to create a toggle
+// Function to create a toggle. The callback parameter must be non-NULL; passing NULL
+// results in an error.
 // Returns 0 on success, -1 if the GPIO is already tracked, -2 if the GPIO is invalid,
-// -3 if the toggle subsystem cannot be initialised, and -4 if timer or interrupt
-// configuration fails.
+// -3 if the toggle subsystem cannot be initialised, -4 if timer or interrupt
+// configuration fails, and -5 if the callback is NULL.
 int toggle_create(gpio_num_t gpio_num, toggle_callback_fn callback, void* context);
 
 // Function to delete a toggle
