@@ -1,96 +1,132 @@
-# ESP32 button library
-ESP32 button library for [ESP32 HomeKit](https://github.com/AchimPieters/esp32-homekit) and applied in [ESP32 HomeKit Demo](https://github.com/AchimPieters/esp32-homekit-demo)
+# ESP32 Button Library
 
-<img  style="float: right;" src="https://github.com/AchimPieters/ESP32-SmartPlug/blob/main/images/MIT%7C%20SOFTWARE%20WHITE.svg" width="150"> 
+ESP32 Button library for handling button input events such as single press, double press, and long press.  
+Designed for use with **ESP-IDF**.
 
-# Hardware Setup
-![Default setup.](https://github.com/AchimPieters/esp32-button/blob/main/images/ESP32-button-default.png)
+---
 
+## Features
 
+This component provides a simple interface to connect a (hardware) button to a GPIO pin and handle events such as:
+- Single press  
+- Double press  
+- Long press  
 
-# Example
+Configuration can be done via `menuconfig` (GPIO pin, active low/high, which events are enabled, repeat press detection, etc.).
 
-```
-/**
+---
 
-   Copyright 2024 Achim Pieters | StudioPieters®
+## Configuration
 
-   Permission is hereby granted, free of charge, to any person obtaining a copy
-   of this software and associated documentation files (the "Software"), to deal
-   in the Software without restriction, including without limitation the rights
-   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-   copies of the Software, and to permit persons to whom the Software is
-   furnished to do so, subject to the following conditions:
+To configure the library:
 
-   The above copyright notice and this permission notice shall be included in all
-   copies or substantial portions of the Software.
+1. Run `idf.py menuconfig`  
+2. Navigate to the **Button** / **esp32-button** component configuration  
+3. Configure the following options:
 
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NON INFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-   CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+| Setting            | Description                                     | Default value |
+|--------------------|-------------------------------------------------|---------------|
+| GPIO Number        | The GPIO pin where the button is connected      | `0`           |
+| Active Low/High    | Defines if the button is triggered on LOW or HIGH | `Active Low`  |
+| Long Press Time (ms) | Time in milliseconds to trigger a long press  | `1000`        |
+| Max Repeat Presses | Number of repeated presses to recognize (e.g. double, triple) | `3` |
 
-   for more information visit https://www.studiopieters.nl
+---
 
- **/
- 
+## Wiring
+
+Connect the button as follows:
+
+- **Button pin** → **GPIO** (configured in `menuconfig`)  
+- **Other side of the button** → GND (or VCC, depending on active_low / active_high setting)  
+- Use either an external pull-up/pull-down resistor or the ESP32’s internal pull-up/pull-down.
+
+---
+
+## Example Code
+
+```c
 #include <driver/gpio.h>
-#include <button.h>
-
-
+#include "button.h"
 
 #define BUTTON_GPIO CONFIG_ESP_BUTTON_GPIO
 
 void button_callback(button_event_t event, void *context) {
-        switch (event) {
-        case button_event_single_press:
-                ESP_LOGI("SINGLE_PRESS", "single press");
-
-                break;
-        case button_event_double_press:
-                ESP_LOGI("DOUBLE_PRESS", "Double press");
-
-                break;
-        case button_event_long_press:
-                ESP_LOGI("LONG_PRESS", "Long press");
-
-                break;
-        default:
-                ESP_LOGI("UNKNOWN_BUTTON_EVENT", "unknown button event: %d", event);
-        }
+    switch (event) {
+    case button_event_single_press:
+        ESP_LOGI("BUTTON", "Single press");
+        break;
+    case button_event_double_press:
+        ESP_LOGI("BUTTON", "Double press");
+        break;
+    case button_event_long_press:
+        ESP_LOGI("BUTTON", "Long press");
+        break;
+    default:
+        ESP_LOGI("BUTTON", "Unknown button event: %d", event);
+        break;
+    }
 }
 
-
-
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Woverride-init"
-button_config_t button_config = BUTTON_CONFIG(
+void app_main(void)
+{
+    #pragma GCC diagnostic push
+    #pragma GCC diagnostic ignored "-Woverride-init"
+    button_config_t config = BUTTON_CONFIG(
         button_active_low,
-        .max_repeat_presses=3,
-        .long_press_time=1000,
-        );
-#pragma GCC diagnostic pop
+        .max_repeat_presses = 3,
+        .long_press_time = 1000
+    );
+    #pragma GCC diagnostic pop
 
-if (button_create(BUTTON_GPIO, button_config, button_callback, NULL)) {
-        ESP_LOGE("INITIALIZE_BUTTON", "Failed to initialize button");
+    if (button_create(BUTTON_GPIO, config, button_callback, NULL)) {
+        ESP_LOGE("BUTTON", "Failed to initialize button");
+    }
+
+    // Example main loop
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
 ```
 
+---
 
-<br>
-<sub><sup>-------------------------------------------------------------------------------------------------------------------------------------</sup></sub>
-<br>
+## Build and Run
 
-<b>ORIGINAL PROJECT</b>
+Build the project with:  
+```bash
+idf.py build
+```
 
-<b><sup>MIT LICENCE</sup></b>
+Flash the ESP32:  
+```bash
+idf.py flash
+```
 
-<sub>Copyright © 2017 [Maxim Kulkin | esp-button](https://github.com/maximkulkin/esp-button)</sub>
+Open the serial monitor:  
+```bash
+idf.py monitor
+```
 
-<sub>Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:</sub>
+---
 
-<sub>The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software</sub>
+## Example Output
 
-<sub>THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</sub>
+```
+I (12345) BUTTON: Single press
+I (14345) BUTTON: Double press
+I (20345) BUTTON: Long press
+```
+
+---
+
+## Notes
+
+- Make sure wiring matches your `menuconfig` settings  
+- Adjust `long_press_time` and `max_repeat_presses` to tune responsiveness  
+- Use internal pull-up/pull-down if needed, or add external resistors  
+
+---
+
+StudioPieters® | Innovation and Learning Labs | https://www.studiopieters.nl
