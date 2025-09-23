@@ -116,6 +116,11 @@ int toggle_create(const gpio_num_t gpio_num, toggle_callback_fn callback, void* 
                 return -2;
         }
 
+        if (!callback) {
+                ESP_LOGE(TAG, "NULL callback provided for GPIO %d", (int) gpio_num);
+                return -5;
+        }
+
         const size_t index = (size_t) gpio_num;
 
         toggle_t *toggle = &toggle_pool[index];
