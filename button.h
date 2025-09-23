@@ -20,6 +20,16 @@ typedef struct {
         uint16_t max_repeat_presses;
 } button_config_t;
 
+static inline button_config_t button_config_default(button_active_level_t level)
+{
+        return (button_config_t) {
+                .active_level = level,
+                .long_press_time = 0,
+                .repeat_press_timeout = 300,
+                .max_repeat_presses = 1,
+        };
+}
+
 typedef enum {
         button_event_single_press,
         button_event_double_press,
@@ -28,14 +38,6 @@ typedef enum {
 } button_event_t;
 
 typedef void (*button_callback_fn)(button_event_t event, void* context);
-
-#define BUTTON_CONFIG(level, ...) \
-        (button_config_t) { \
-                .active_level = level, \
-                .repeat_press_timeout = 300, \
-                .max_repeat_presses = 1, \
-                __VA_ARGS__ \
-        }
 
 // Returns 0 on success.
 // -1 if the GPIO is already registered.
