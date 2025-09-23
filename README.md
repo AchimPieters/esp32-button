@@ -70,14 +70,9 @@ void button_callback(button_event_t event, void *context) {
 
 void app_main(void)
 {
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Woverride-init"
-    button_config_t config = BUTTON_CONFIG(
-        button_active_low,
-        .max_repeat_presses = 3,
-        .long_press_time = 1000
-    );
-    #pragma GCC diagnostic pop
+    button_config_t config = button_config_default(button_active_low);
+    config.max_repeat_presses = 3;
+    config.long_press_time = 1000;
 
     if (button_create(BUTTON_GPIO, config, button_callback, NULL)) {
         ESP_LOGE("BUTTON", "Failed to initialize button");
