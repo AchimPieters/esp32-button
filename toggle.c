@@ -229,13 +229,14 @@ void toggle_delete(const gpio_num_t gpio_num) {
         xSemaphoreTake(toggles_lock, portMAX_DELAY);
 
         toggle = toggle_map[index];
-        toggle_map[index] = NULL;
-        toggle_claimed[index] = false;
-
-        xSemaphoreGive(toggles_lock);
-
-        if (!toggle)
+        if (!toggle) {
+                // No active toggle to delete; leave the claimed state untouched in case
+                // a concurrent creation is still in progress for this GPIO.
+                xSemaphoreGive(toggles_lock);
                 return;
+        }
+
+        toggle_map[index] = NULL;
 
         esp_err_t err = gpio_intr_disable(gpio_num);
         if (err != ESP_OK) {
@@ -255,7 +256,11 @@ void toggle_delete(const gpio_num_t gpio_num) {
                 toggle->debounce_timer = NULL;
         }
 
+        toggle_claimed[index] = false;
+
         memset(toggle, 0, sizeof(*toggle));
+
+        xSemaphoreGive(toggles_lock);
 }
 
 
