@@ -44,6 +44,7 @@ typedef void (*button_callback_fn)(button_event_t event, void* context);
 // -2 if timer resources for the button cannot be created.
 // -4 if the GPIO toggle helper cannot be initialised.
 // -5 if the GPIO number is invalid.
+// -6 if the callback is NULL.
 // -7 if the button lock cannot be created.
 int button_create(gpio_num_t gpio_num,
                   button_config_t config,
