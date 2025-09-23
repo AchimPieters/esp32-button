@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <limits.h>
 
 #include <esp_log.h>
 
@@ -190,9 +189,6 @@ int button_create(const gpio_num_t gpio_num,
         button_config_t normalized = config;
         if (!normalized.max_repeat_presses) {
                 normalized.max_repeat_presses = 1;
-        }
-        if (normalized.max_repeat_presses > UINT16_MAX) {
-                normalized.max_repeat_presses = UINT16_MAX;
         }
 
         const size_t index = (size_t) gpio_num;
