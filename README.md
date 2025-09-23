@@ -87,6 +87,19 @@ void app_main(void)
 
 ---
 
+## Return values
+
+`button_create` returns `0` on success and a negative value on error:
+
+- `-1` – the GPIO is already registered.
+- `-2` – timer resources for the button cannot be created.
+- `-4` – the GPIO toggle helper cannot be initialised.
+- `-5` – the GPIO number is invalid.
+- `-6` – the callback pointer is `NULL`.
+- `-7` – the button lock cannot be created.
+
+---
+
 ## Build and Run
 
 Build the project with:  

@@ -36,7 +36,15 @@ void app_main(void) {
         config.repeat_press_timeout = 350;
         config.max_repeat_presses = 3;
 
-        int status = button_create(BUTTON_GPIO, config, button_handler, NULL);
+        int status = button_create(BUTTON_GPIO, config, NULL, NULL);
+        if (status != -6) {
+                ESP_LOGE(TAG, "Expected -6 when callback is NULL, got %d", status);
+                return;
+        }
+
+        ESP_LOGI(TAG, "Verified button_create rejects NULL callbacks");
+
+        status = button_create(BUTTON_GPIO, config, button_handler, NULL);
         if (status != 0) {
                 ESP_LOGE(TAG, "Failed to create button (error %d)", status);
                 return;

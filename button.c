@@ -178,6 +178,11 @@ int button_create(const gpio_num_t gpio_num,
                 return -5;
         }
 
+        if (!callback) {
+                ESP_LOGE(TAG, "Callback must not be NULL for GPIO %d", (int) gpio_num);
+                return -6;
+        }
+
         if (!buttons_lock && buttons_init() != 0) {
                 return -7;
         }
