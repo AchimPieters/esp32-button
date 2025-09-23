@@ -1,5 +1,5 @@
 name: "esp32-button"
-version: "1.2.1"
+version: "1.2.2"
 description: "ESP32 library for interfacing with buttons."
 url: "https://github.com/AchimPieters/esp32-button"
 maintainers:
