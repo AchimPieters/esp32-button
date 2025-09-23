@@ -31,12 +31,10 @@ static void button_handler(button_event_t event, void *context) {
 }
 
 void app_main(void) {
-        button_config_t config = BUTTON_CONFIG(
-                button_active_low,
-                .long_press_time = 1500,
-                .repeat_press_timeout = 350,
-                .max_repeat_presses = 3
-        );
+        button_config_t config = button_config_default(button_active_low);
+        config.long_press_time = 1500;
+        config.repeat_press_timeout = 350;
+        config.max_repeat_presses = 3;
 
         int status = button_create(BUTTON_GPIO, config, button_handler, NULL);
         if (status != 0) {
