@@ -284,14 +284,17 @@ void button_destroy(const gpio_num_t gpio_num) {
         xSemaphoreTake(buttons_lock, portMAX_DELAY);
 
         button = registered_buttons[index];
-        registered_buttons[index] = NULL;
-        button_claimed[index] = false;
-
-        xSemaphoreGive(buttons_lock);
-
-        if (!button)
+        if (!button) {
+                xSemaphoreGive(buttons_lock);
                 return;
+        }
+
+        registered_buttons[index] = NULL;
 
         toggle_delete(button->gpio_num);
         button_reset(button);
+
+        button_claimed[index] = false;
+
+        xSemaphoreGive(buttons_lock);
 }
